@@ -1,0 +1,226 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Photo Details Viewer</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;background:#f4f6f8;margin:0;padding:20px;color:#222}
+    header{max-width:1100px;margin:0 auto 18px;text-align:center}
+    .wrap{max-width:1100px;margin:0 auto;display:flex;gap:20px;align-items:flex-start}
+    .card{background:#fff;border-radius:8px;padding:16px;box-shadow:0 6px 18px rgba(0,0,0,0.06)}
+    .left{flex:0 0 420px}
+    img#sourceImage{width:100%;height:auto;border-radius:6px;border:1px solid #ddd}
+    h1{margin:6px 0;font-size:20px}
+    h2{margin:0 0 8px}
+    .field{margin:10px 0}
+    .label{color:#666;font-size:0.85rem}
+    .value{font-weight:700;font-size:1.05rem;margin-top:4px}
+    pre.raw{background:#fafafa;padding:12px;border-radius:6px;overflow:auto;max-height:260px}
+    .spinner{display:inline-block;padding:6px 10px;background:#111;color:#fff;border-radius:6px;font-size:0.85rem}
+    .small{font-size:0.85rem;color:#666;margin-top:8px}
+    .controls{margin-top:10px}
+    input[type="text"]{width:70%;padding:8px;border:1px solid #ccc;border-radius:6px}
+    button{padding:8px 12px;border-radius:6px;border:0;background:#0074D9;color:#fff;cursor:pointer}
+  </style>
+
+  <!-- Tesseract.js -->
+  <script src="https://unpkg.com/tesseract.js@v4.1.1/dist/tesseract.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Photo Details Viewer (client-side OCR)</h1>
+    <div class="small">Paste an image URL (or use the QR that encodes this page with ?img=URL). OCR runs in the visitor's browser.</div>
+  </header>
+
+  <div class="wrap">
+    <div class="left card">
+      <h2>Photo</h2>
+      <img id="sourceImage" src="" alt="photo" crossorigin="anonymous" />
+      <div class="controls">
+        <input id="imgUrlInput" type="text" placeholder="Paste image URL here (or leave blank to use default)"/>
+        <button id="loadBtn">Load</button>
+        <button id="scanBtn">Scan & Extract</button>
+        <span id="status" style="margin-left:8px"></span>
+      </div>
+      <div class="small" style="margin-top:8px">Tesseract.js runs in browser — may take a few seconds.</div>
+    </div>
+
+    <div class="card" style="flex:1">
+      <h2>Extracted Details</h2>
+
+      <div class="field"><div class="label">Name</div><div id="name" class="value">—</div></div>
+      <div class="field"><div class="label">Father / Guardian</div><div id="father" class="value">—</div></div>
+      <div class="field"><div class="label">Age</div><div id="age" class="value">—</div></div>
+      <div class="field"><div class="label">DOB</div><div id="dob" class="value">—</div></div>
+      <div class="field"><div class="label">Phone</div><div id="phone" class="value">—</div></div>
+      <div class="field"><div class="label">Blood Group</div><div id="blood" class="value">—</div></div>
+
+      <h3 style="margin-top:14px">Raw OCR text</h3>
+      <pre id="raw" class="raw">No OCR run yet.</pre>
+    </div>
+  </div>
+
+<script>
+/* Utility: get query param ?img= */
+function getParam(name){
+  try{
+    const u = new URL(window.location.href);
+    return u.searchParams.get(name);
+  }catch(e){
+    return null;
+  }
+}
+
+/* DOM */
+const imgEl = document.getElementById('sourceImage');
+const status = document.getElementById('status');
+const loadBtn = document.getElementById('loadBtn');
+const scanBtn = document.getElementById('scanBtn');
+const urlInput = document.getElementById('imgUrlInput');
+const fields = {
+  name: document.getElementById('name'),
+  father: document.getElementById('father'),
+  age: document.getElementById('age'),
+  dob: document.getElementById('dob'),
+  phone: document.getElementById('phone'),
+  blood: document.getElementById('blood'),
+  raw: document.getElementById('raw')
+};
+
+/* Default image (your uploaded image) */
+const DEFAULT_IMG = "https://i.ibb.co/5Xsg48Gs/qr-code.jpg";
+
+function resetFields(){
+  for(const k of ['name','father','age','dob','phone','blood']){
+    fields[k].textContent = '—';
+  }
+  fields.raw.textContent = 'Waiting...';
+}
+
+/* Parsing heuristics (simple) */
+function parseText(text){
+  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const joined = lines.join(' ');
+
+  const parsed = {name:null, father:null, age:null, dob:null, phone:null, blood:null, address:null};
+
+  // phone: 10-digit
+  const phone = joined.match(/\b\d{10}\b/);
+  if(phone) parsed.phone = phone[0];
+
+  // dob: dd-mm-yyyy or dd/mm/yyyy or dd.mm.yyyy or yyyy-mm-dd
+  const dob = joined.match(/\b\d{2}[-\/.]\d{2}[-\/.]\d{4}\b/) || joined.match(/\b\d{4}[-\/.]\d{2}[-\/.]\d{2}\b/);
+  if(dob) parsed.dob = dob[0];
+
+  // age: 'Age: 32' or standalone small number
+  const ageMatch = joined.match(/\bAge[:\s]*([0-9]{1,3})\b/i);
+  if(ageMatch) parsed.age = ageMatch[1];
+  else {
+    for(const ln of lines){
+      if(/^\d{1,3}$/.test(ln) && +ln < 120){ parsed.age = ln; break; }
+    }
+  }
+
+  // blood group
+  const bg = joined.match(/\b(?:A|B|AB|O)[\s\-]?[+\-](?:ve)?\b/i) || joined.match(/\b(?:A|B|AB|O)\s*\+ve|\-ve\b/i);
+  if(bg) parsed.blood = bg[0].replace(/\s+/g,'');
+
+  // name heuristics: look for 'Name' or tamil 'பெயர்' or first long line without digits
+  for(let i=0;i<Math.min(12,lines.length);i++){
+    const ln = lines[i];
+    if(/பெயர்|Name/i.test(ln)){
+      if(ln.includes(':')) parsed.name = ln.split(':')[1].trim();
+      else if(i+1<lines.length) parsed.name = lines[i+1];
+      break;
+    }
+  }
+  if(!parsed.name){
+    for(const ln of lines){
+      if(!/\d/.test(ln) && ln.length>3 && ln.length<80){ parsed.name = ln; break; }
+    }
+  }
+
+  // father/guardian heuristics
+  for(let i=0;i<Math.min(12,lines.length);i++){
+    const ln = lines[i];
+    if(/Father|தந்தை|Guardian/i.test(ln)){
+      if(ln.includes(':')) parsed.father = ln.split(':')[1].trim();
+      else if(i+1<lines.length) parsed.father = lines[i+1];
+      break;
+    }
+  }
+
+  // address fallback: last 4 lines combined
+  const lastChunk = lines.slice(-6).filter(l=>l.length>3).join(', ');
+  parsed.address = lastChunk || null;
+
+  return parsed;
+}
+
+/* Load image from URL into page */
+function loadImage(url){
+  imgEl.src = url;
+  urlInput.value = url;
+  resetFields();
+}
+
+/* Run Tesseract.js OCR */
+async function runOcrOnImage(){
+  const url = imgEl.src;
+  if(!url) return alert("No image loaded");
+  status.innerHTML = '<span class="spinner">Scanning…</span>';
+  resetFields();
+
+  try{
+    const worker = Tesseract.createWorker({
+      logger: m => {
+        // optional: show progress
+        if(m.status && m.progress){
+          const pct = Math.round(m.progress*100);
+          status.textContent = `${m.status} ${pct}%`;
+        }
+      }
+    });
+    await worker.load();
+    await worker.loadLanguage('eng');
+    await worker.initialize('eng');
+
+    const { data } = await worker.recognize(url);
+    await worker.terminate();
+
+    const raw = data.text || '';
+    fields.raw.textContent = raw;
+
+    const parsed = parseText(raw);
+    fields.name.textContent = parsed.name || '—';
+    fields.father.textContent = parsed.father || '—';
+    fields.age.textContent = parsed.age || '—';
+    fields.dob.textContent = parsed.dob || '—';
+    fields.phone.textContent = parsed.phone || '—';
+    fields.blood.textContent = parsed.blood || '—';
+
+    status.textContent = 'Done';
+  }catch(err){
+    console.error(err);
+    status.textContent = 'Error';
+    fields.raw.textContent = 'OCR failed: ' + (err.message || err);
+  }
+}
+
+/* Event handlers */
+loadBtn.addEventListener('click', ()=> {
+  const u = urlInput.value.trim();
+  if(!u) return alert('Paste an image URL first');
+  loadImage(u);
+});
+scanBtn.addEventListener('click', runOcrOnImage);
+
+/* On page load: read ?img param or use default */
+document.addEventListener('DOMContentLoaded', ()=>{
+  const p = getParam('img');
+  loadImage(p || DEFAULT_IMG);
+});
+</script>
+</body>
+</html>
