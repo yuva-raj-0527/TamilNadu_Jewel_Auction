@@ -20,17 +20,21 @@
     .spinner{display:inline-block;padding:6px 10px;background:#111;color:#fff;border-radius:6px;font-size:0.85rem}
     .small{font-size:0.85rem;color:#666;margin-top:8px}
     .controls{margin-top:10px}
-    input[type="text"]{width:70%;padding:8px;border:1px solid #ccc;border-radius:6px}
+    input[type="text"]{width:70%;padding:8px;border:1px solid:#ccc;border-radius:6px}
     button{padding:8px 12px;border-radius:6px;border:0;background:#0074D9;color:#fff;cursor:pointer}
+    @media (max-width:900px){
+      .wrap{flex-direction:column; padding:10px}
+      .left{flex:unset;width:100%}
+    }
   </style>
 
-  <!-- Use a stable CDN for Tesseract.js -->
+  <!-- Stable CDN for Tesseract.js -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v4.1.1/dist/tesseract.min.js"></script>
 </head>
 <body>
   <header>
     <h1>Photo Details Viewer (client-side OCR)</h1>
-    <div class="small">Paste an image URL (or use the QR that encodes this page with ?img=URL). OCR runs in the browser.</div>
+    <div class="small">Paste an image URL (or use the QR that encodes this page with ?img=URL). OCR runs in the browser — no server required.</div>
   </header>
 
   <div class="wrap">
@@ -43,7 +47,7 @@
         <button id="scanBtn">Scan & Extract</button>
         <span id="status" style="margin-left:8px"></span>
       </div>
-      <div class="small" style="margin-top:8px">Tesseract.js runs in browser — may take a few seconds.</div>
+      <div class="small" style="margin-top:8px">Tesseract.js runs in browser — may take a few seconds. If OCR is slow, wait until progress completes.</div>
     </div>
 
     <div class="card" style="flex:1">
@@ -62,8 +66,9 @@
   </div>
 
 <script>
-/* index.html - updated to use Tesseract.recognize(...) which works with the CDN build.
-   This page reads ?img=... or uses a default image, shows it, and runs OCR client-side.
+/* Full index.html - updated OCR using blob fetch + Tesseract.recognize
+   Put this file at the repo root and publish via GitHub Pages.
+   Usage: https://<user>.github.io/<repo>/?img=<image-url>
 */
 
 function getParam(name){
@@ -98,7 +103,7 @@ function resetFields(){
   fields.raw.textContent = 'Waiting...';
 }
 
-/* Simple parsing heuristics for OCR text */
+/* Parsing heuristics for typical forms */
 function parseText(text){
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const joined = lines.join(' ');
@@ -121,11 +126,11 @@ function parseText(text){
     }
   }
 
-  // blood group
+  // blood group (A+, B+, O-, AB+, B+ve etc)
   const bg = joined.match(/\b(?:A|B|AB|O)[\s\-]?[+\-](?:ve)?\b/i) || joined.match(/\b(?:A|B|AB|O)\s*\+ve|\-ve\b/i);
   if(bg) parsed.blood = bg[0].replace(/\s+/g,'');
 
-  // name heuristics: look for 'Name' or 'பெயர்' or first long line without digits
+  // name heuristics: look for 'Name' or Tamil 'பெயர்' or pick first long non-digit line
   for(let i=0;i<Math.min(12,lines.length);i++){
     const ln = lines[i];
     if(/பெயர்|Name/i.test(ln)){
@@ -136,7 +141,7 @@ function parseText(text){
   }
   if(!parsed.name){
     for(const ln of lines){
-      if(!/\d/.test(ln) && ln.length>3 && ln.length<80){ parsed.name = ln; break; }
+      if(!/\d/.test(ln) && ln.length>3 && ln.length<120){ parsed.name = ln; break; }
     }
   }
 
@@ -150,40 +155,51 @@ function parseText(text){
     }
   }
 
-  // address fallback: last 4 lines combined (not shown in UI but parsed if needed)
+  // address fallback (not shown) - combine last lines
   const lastChunk = lines.slice(-6).filter(l=>l.length>3).join(', ');
   parsed.address = lastChunk || null;
 
   return parsed;
 }
 
-/* Load image from URL into page */
+/* Load image to UI */
 function loadImage(url){
   imgEl.src = url;
   urlInput.value = url;
   resetFields();
 }
 
-/* New OCR function: uses Tesseract.recognize which works with the CDN script */
+/* OCR: fetch image as blob (helps avoid CORS canvas tainting), then recognize */
 async function runOcrOnImage(){
   const url = imgEl.src;
   if(!url) return alert("No image loaded");
-  status.innerHTML = '<span class="spinner">Scanning…</span>';
+  status.innerHTML = '<span class="spinner">Preparing…</span>';
   resetFields();
 
   try{
-    // logger to show progress updates
+    // fetch image as blob (CORS: server must allow cross-origin fetch; i.ibb.co usually allows)
+    status.textContent = 'Fetching image...';
+    const resp = await fetch(url, { mode: 'cors' });
+    if(!resp.ok) throw new Error('Image fetch failed: ' + resp.status + ' ' + resp.statusText);
+    const blob = await resp.blob();
+
+    // run Tesseract.recognize on the blob and show progress via logger
+    status.innerHTML = '<span class="spinner">Starting OCR…</span>';
     const logger = m => {
-      if (m && m.status && typeof m.progress === 'number') {
-        const pct = Math.round(m.progress * 100);
-        status.textContent = `${m.status} ${pct}%`;
-      } else if (m && m.status) {
-        status.textContent = m.status;
+      try {
+        if (m && m.status && typeof m.progress === 'number') {
+          status.textContent = `${m.status} ${Math.round(m.progress*100)}%`;
+        } else if (m && m.status) {
+          status.textContent = m.status;
+        }
+        // also log detailed messages to console for debugging
+        // console.debug('TESSERACT:', m);
+      } catch(e){
+        console.debug('logger err', e);
       }
     };
 
-    // Recognize the image. 'eng' is default; for Tamil you would need tam traineddata hosted.
-    const result = await Tesseract.recognize(url, 'eng', { logger });
+    const result = await Tesseract.recognize(blob, 'eng', { logger });
     const raw = (result && result.data && result.data.text) ? result.data.text : '';
     fields.raw.textContent = raw;
 
@@ -196,10 +212,10 @@ async function runOcrOnImage(){
     fields.blood.textContent = parsed.blood || '—';
 
     status.textContent = 'Done';
-  }catch(err){
-    console.error(err);
-    status.textContent = 'Error';
+  } catch (err) {
+    console.error('OCR error:', err);
     fields.raw.textContent = 'OCR failed: ' + (err.message || err);
+    status.textContent = 'Error';
   }
 }
 
@@ -219,4 +235,3 @@ document.addEventListener('DOMContentLoaded', ()=>{
 </script>
 </body>
 </html>
-
