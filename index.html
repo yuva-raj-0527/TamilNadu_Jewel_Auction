@@ -24,13 +24,13 @@
     button{padding:8px 12px;border-radius:6px;border:0;background:#0074D9;color:#fff;cursor:pointer}
   </style>
 
-  <!-- Tesseract.js -->
-  <script src="https://unpkg.com/tesseract.js@v4.1.1/dist/tesseract.min.js"></script>
+  <!-- Use a stable CDN for Tesseract.js -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v4.1.1/dist/tesseract.min.js"></script>
 </head>
 <body>
   <header>
     <h1>Photo Details Viewer (client-side OCR)</h1>
-    <div class="small">Paste an image URL (or use the QR that encodes this page with ?img=URL). OCR runs in the visitor's browser.</div>
+    <div class="small">Paste an image URL (or use the QR that encodes this page with ?img=URL). OCR runs in the browser.</div>
   </header>
 
   <div class="wrap">
@@ -38,7 +38,7 @@
       <h2>Photo</h2>
       <img id="sourceImage" src="" alt="photo" crossorigin="anonymous" />
       <div class="controls">
-        <input id="imgUrlInput" type="text" placeholder="Paste image URL here (or leave blank to use default)"/>
+        <input id="imgUrlInput" type="text" placeholder="Paste image URL here"/>
         <button id="loadBtn">Load</button>
         <button id="scanBtn">Scan & Extract</button>
         <span id="status" style="margin-left:8px"></span>
@@ -62,22 +62,23 @@
   </div>
 
 <script>
-/* Utility: get query param ?img= */
+/* index.html - updated to use Tesseract.recognize(...) which works with the CDN build.
+   This page reads ?img=... or uses a default image, shows it, and runs OCR client-side.
+*/
+
 function getParam(name){
   try{
     const u = new URL(window.location.href);
     return u.searchParams.get(name);
-  }catch(e){
-    return null;
-  }
+  }catch(e){ return null; }
 }
 
-/* DOM */
 const imgEl = document.getElementById('sourceImage');
 const status = document.getElementById('status');
 const loadBtn = document.getElementById('loadBtn');
 const scanBtn = document.getElementById('scanBtn');
 const urlInput = document.getElementById('imgUrlInput');
+
 const fields = {
   name: document.getElementById('name'),
   father: document.getElementById('father'),
@@ -88,7 +89,6 @@ const fields = {
   raw: document.getElementById('raw')
 };
 
-/* Default image (your uploaded image) */
 const DEFAULT_IMG = "https://i.ibb.co/5Xsg48Gs/qr-code.jpg";
 
 function resetFields(){
@@ -98,12 +98,11 @@ function resetFields(){
   fields.raw.textContent = 'Waiting...';
 }
 
-/* Parsing heuristics (simple) */
+/* Simple parsing heuristics for OCR text */
 function parseText(text){
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const joined = lines.join(' ');
-
-  const parsed = {name:null, father:null, age:null, dob:null, phone:null, blood:null, address:null};
+  const parsed = {name:null,father:null,age:null,dob:null,phone:null,blood:null};
 
   // phone: 10-digit
   const phone = joined.match(/\b\d{10}\b/);
@@ -126,7 +125,7 @@ function parseText(text){
   const bg = joined.match(/\b(?:A|B|AB|O)[\s\-]?[+\-](?:ve)?\b/i) || joined.match(/\b(?:A|B|AB|O)\s*\+ve|\-ve\b/i);
   if(bg) parsed.blood = bg[0].replace(/\s+/g,'');
 
-  // name heuristics: look for 'Name' or tamil 'பெயர்' or first long line without digits
+  // name heuristics: look for 'Name' or 'பெயர்' or first long line without digits
   for(let i=0;i<Math.min(12,lines.length);i++){
     const ln = lines[i];
     if(/பெயர்|Name/i.test(ln)){
@@ -151,7 +150,7 @@ function parseText(text){
     }
   }
 
-  // address fallback: last 4 lines combined
+  // address fallback: last 4 lines combined (not shown in UI but parsed if needed)
   const lastChunk = lines.slice(-6).filter(l=>l.length>3).join(', ');
   parsed.address = lastChunk || null;
 
@@ -165,7 +164,7 @@ function loadImage(url){
   resetFields();
 }
 
-/* Run Tesseract.js OCR */
+/* New OCR function: uses Tesseract.recognize which works with the CDN script */
 async function runOcrOnImage(){
   const url = imgEl.src;
   if(!url) return alert("No image loaded");
@@ -173,23 +172,19 @@ async function runOcrOnImage(){
   resetFields();
 
   try{
-    const worker = Tesseract.createWorker({
-      logger: m => {
-        // optional: show progress
-        if(m.status && m.progress){
-          const pct = Math.round(m.progress*100);
-          status.textContent = `${m.status} ${pct}%`;
-        }
+    // logger to show progress updates
+    const logger = m => {
+      if (m && m.status && typeof m.progress === 'number') {
+        const pct = Math.round(m.progress * 100);
+        status.textContent = `${m.status} ${pct}%`;
+      } else if (m && m.status) {
+        status.textContent = m.status;
       }
-    });
-    await worker.load();
-    await worker.loadLanguage('eng');
-    await worker.initialize('eng');
+    };
 
-    const { data } = await worker.recognize(url);
-    await worker.terminate();
-
-    const raw = data.text || '';
+    // Recognize the image. 'eng' is default; for Tamil you would need tam traineddata hosted.
+    const result = await Tesseract.recognize(url, 'eng', { logger });
+    const raw = (result && result.data && result.data.text) ? result.data.text : '';
     fields.raw.textContent = raw;
 
     const parsed = parseText(raw);
@@ -224,3 +219,4 @@ document.addEventListener('DOMContentLoaded', ()=>{
 </script>
 </body>
 </html>
+
